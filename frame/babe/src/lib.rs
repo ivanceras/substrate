@@ -361,7 +361,7 @@ impl<T: Trait> Module<T> {
 	// finds the start slot of the current epoch. only guaranteed to
 	// give correct results after `do_initialize` of the first block
 	// in the chain (as its result is based off of `GenesisSlot`).
-	fn current_epoch_start() -> SlotNumber {
+	pub fn current_epoch_start() -> SlotNumber {
 		(EpochIndex::get() * T::EpochDuration::get()) + GenesisSlot::get()
 	}
 

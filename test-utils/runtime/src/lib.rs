@@ -52,7 +52,7 @@ use cfg_if::cfg_if;
 use sp_core::storage::ChildType;
 
 // Ensure Babe and Aura use the same crypto to simplify things a bit.
-pub use sp_consensus_babe::AuthorityId;
+pub use sp_consensus_babe::{AuthorityId, SlotNumber};
 pub type AuraId = sp_consensus_aura::sr25519::AuthorityId;
 
 // Inlucde the WASM binary
@@ -603,6 +603,10 @@ cfg_if! {
 						secondary_slots: true,
 					}
 				}
+
+				fn current_epoch_start() -> SlotNumber {
+					<pallet_babe::Module<Runtime>>::current_epoch_start()
+				}
 			}
 
 			impl sp_offchain::OffchainWorkerApi<Block> for Runtime {
@@ -789,6 +793,10 @@ cfg_if! {
 						randomness: <pallet_babe::Module<Runtime>>::randomness(),
 						secondary_slots: true,
 					}
+				}
+
+				fn current_epoch_start() -> SlotNumber {
+					<pallet_babe::Module<Runtime>>::current_epoch_start()
 				}
 			}
 
