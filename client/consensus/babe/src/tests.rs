@@ -28,6 +28,7 @@ use sp_consensus::{
 	NoNetwork as DummyOracle, Proposal, RecordProof,
 	import_queue::{BoxBlockImport, BoxJustificationImport, BoxFinalityProofImport},
 };
+use sc_keystore::testing::create_temp_keystore;
 use sc_network_test::*;
 use sc_network_test::{Block as TestBlock, PeersClient};
 use sc_network::config::{BoxFinalityProofRequestBuilder, ProtocolConfig};
@@ -37,7 +38,7 @@ use sc_client_api::{BlockchainEvents, backend::TransactionFor};
 use log::debug;
 use std::{time::Duration, cell::RefCell};
 use sp_keyring::Ed25519Keyring;
-use crate::rpc::{Babe, BabeRPC};
+use rpc::{BabeRPC, BabeRPCHandler};
 use jsonrpc_core::IoHandler;
 
 type Item = DigestItem<Hash>;
@@ -816,15 +817,6 @@ fn verify_slots_are_strictly_increasing() {
 	);
 }
 
-fn create_keystore(authority: Ed25519Keyring) -> (KeyStorePtr, tempfile::TempDir) {
-	let keystore_path = tempfile::tempdir().expect("Creates keystore path");
-	let keystore = sc_keystore::Store::open(keystore_path.path(), None).expect("Creates keystore");
-	keystore.write().insert_ephemeral_from_seed::<AuthorityPair>(&authority.to_seed())
-		.expect("Creates authority key");
-
-	(keystore, keystore_path)
-}
-
 #[test]
 fn rpc() {
 	let mut net = BabeTestNet::new(1);
@@ -836,13 +828,13 @@ fn rpc() {
 	let epoch_changes = data.link.epoch_changes.clone();
 	let config = Config::get_or_compute(&*client).expect("lol");
 	let select_chain = peer.select_chain().expect("Full client has select_chain");
-	let keystore = create_keystore(Ed25519Keyring::Alice).0;
-	let handler = BabeRPC::new(client.clone(), epoch_changes, keystore, config, Arc::new(select_chain)).unwrap();
+	let keystore = create_temp_keystore::<AuthorityPair>(Ed25519Keyring::Alice).0;
+	let handler = BabeRPCHandler::new(client.clone(), epoch_changes, keystore, config, Arc::new(select_chain)).unwrap();
 	let mut io = IoHandler::new();
 
-	io.extend_with(Babe::to_delegate(handler));
+	io.extend_with(BabeRPC::to_delegate(handler));
 	let request = r#"{"jsonrpc":"2.0","method":"babe_epochAuthorship","params": [],"id":1}"#;
-	let response = r#"{"jsonrpc":"2.0","result":{"5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY":{"primary":[0],"secondary":[1,2,4,6]}},"id":1}"#;
+	let response = r#"{"jsonrpc":"2.0","result":{"5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY":{"primary":[0],"secondary":[1,2,4]}},"id":1}"#;
 
 	assert_eq!(Some(response.into()), io.handle_request_sync(request));
 }

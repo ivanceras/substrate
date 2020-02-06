@@ -21,7 +21,7 @@ sp-io = { version = "2.0.0", path = "../../../primitives/io" }
 sp-inherents = { version = "2.0.0", path = "../../../primitives/inherents" }
 sp-timestamp = { version = "2.0.0", path = "../../../primitives/timestamp" }
 sc-telemetry = { version = "2.0.0", path = "../../telemetry" }
-sc-keystore = { version = "2.0.0", path = "../../keystore" }
+sc-keystore = { version = "2.0.0", path = "../../keystore", features=["test-helpers"] }
 sc-client-api = { version = "2.0.0", path = "../../api" }
 sc-client = { version = "0.8", path = "../../" }
 sc-consensus-epochs = { version = "0.8", path = "../epochs" }

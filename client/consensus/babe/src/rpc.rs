@@ -16,66 +16,67 @@
 
 //! rpc api for babe.
 
-use std::{fmt, io};
+use crate::{Epoch, SharedEpochChanges, authorship, Config};
 use futures::{
 	FutureExt as _, TryFutureExt as _,
 	executor::ThreadPool,
 	channel::oneshot,
 	future::ready,
 };
-use sp_consensus_babe::{AuthorityId, Epoch, BabePreDigest};
-use crate::{SharedEpochChanges, authorship, epoch_changes::descendent_query, Config};
-use sc_keystore::KeyStorePtr;
-use std::sync::Arc;
-use sp_core::crypto::Pair;
-use sp_runtime::traits::{Block as BlockT, Header as _};
-use sp_consensus::{SelectChain, Error as ConsensusError};
-use sp_consensus_babe::BabeApi;
-use sp_blockchain::{HeaderBackend, HeaderMetadata, Error as BlockChainError};
-use serde::{Deserialize, Serialize};
-use sp_api::{ProvideRuntimeApi, BlockId};
-use std::collections::HashMap;
 use jsonrpc_core::{
 	Error as RpcError,
 	futures::future as rpc_future,
 };
 use jsonrpc_derive::rpc;
+use sc_consensus_epochs::{descendent_query, Epoch as EpochT};
+use sp_consensus_babe::{
+	AuthorityId,
+	BabeApi,
+	digests::PreDigest,
+};
+use serde::{Deserialize, Serialize};
+use sc_keystore::KeyStorePtr;
+use sp_api::{ProvideRuntimeApi, BlockId};
+use sp_core::crypto::Pair;
+use sp_runtime::traits::{Block as BlockT, Header as _};
+use sp_consensus::{SelectChain, Error as ConsensusError};
+use sp_blockchain::{HeaderBackend, HeaderMetadata, Error as BlockChainError};
+use std::{collections::HashMap, fmt, io, sync::Arc};
 
 type FutureResult<T> = Box<dyn rpc_future::Future<Item = T, Error = RpcError> + Send>;
 
-pub use self::rpc_impl_Babe::gen_server;
-/// Provides rpc methods for interacting with Babe
+/// Provides rpc methods for interacting with Babe.
 #[rpc]
-pub trait Babe {
-	/// query slot authorship info
+pub trait BabeRPC {
+	/// Returns data about which slots (primary or secondary) can be claimed in the current epoch
+	/// with the keys in the keystore.
 	#[rpc(name = "babe_epochAuthorship")]
-	fn epoch_authorship(&self) -> FutureResult<HashMap<AuthorityId, SlotAuthorship>>;
+	fn epoch_authorship(&self) -> FutureResult<HashMap<AuthorityId, EpochAuthorship>>;
 }
 
-/// RPC handler for Babe
-/// provides `babe_epochAuthorship` method for querying slot authorship data.
+/// Implements the BabeRPC trait for interacting with Babe.
 ///
 /// Uses a background thread to calculate epoch_authorship data.
-pub struct BabeRPC<B: BlockT, C, SC> {
+pub struct BabeRPCHandler<B: BlockT, C, SC> {
 	/// shared refernce to the client.
 	client: Arc<C>,
 	/// shared reference to EpochChanges
-	shared_epoch_changes: SharedEpochChanges<B>,
+	shared_epoch_changes: SharedEpochChanges<B, Epoch>,
 	/// shared reference to the Keystore
 	keystore: KeyStorePtr,
 	/// config (actually holds the slot duration)
 	babe_config: Config,
-	/// threadpool for spwaning cpu bound tasks.
+	/// threadpool for spawning cpu bound tasks.
 	threadpool: ThreadPool,
 	/// select chain
 	select_chain: Arc<SC>,
 }
 
-impl<B: BlockT, C, SC> BabeRPC<B, C, SC> {
+impl<B: BlockT, C, SC> BabeRPCHandler<B, C, SC> {
 	/// creates a new instance of the BabeRpc handler.
 	pub fn new(
 		client: Arc<C>,
-		shared_epoch_changes: SharedEpochChanges<B>,
+		shared_epoch_changes: SharedEpochChanges<B, Epoch>,
 		keystore: KeyStorePtr,
 		babe_config: Config,
 		select_chain: Arc<SC>,
@@ -96,16 +97,15 @@ impl<B: BlockT, C, SC> BabeRPC<B, C, SC> {
 	}
 }
 
-impl<B, C, SC> Babe for BabeRPC<B, C, SC>
+impl<B, C, SC> BabeRPC for BabeRPCHandler<B, C, SC>
 	where
 		B: BlockT,
-		C: ProvideRuntimeApi<B> + HeaderBackend<B>
-		+ HeaderMetadata<B, Error=BlockChainError> + 'static,
+		C: ProvideRuntimeApi<B> + HeaderBackend<B> + HeaderMetadata<B, Error=BlockChainError> + 'static,
 		C::Api: BabeApi<B>,
-		<<C as ProvideRuntimeApi<B>>::Api as sp_api::ApiErrorExt>::Error: fmt::Debug,
+		<C::Api as sp_api::ApiErrorExt>::Error: fmt::Debug,
 		SC: SelectChain<B> + 'static,
 {
-	fn epoch_authorship(&self) -> FutureResult<HashMap<AuthorityId, SlotAuthorship>> {
+	fn epoch_authorship(&self) -> FutureResult<HashMap<AuthorityId, EpochAuthorship>> {
 		let (
 			babe_config,
 			keystore,
@@ -129,19 +129,18 @@ impl<B, C, SC> Babe for BabeRPC<B, C, SC>
 					Error::StringError(format!("{:?}", err))
 				})?;
 			let epoch = epoch_data(&shared_epoch, &client, &babe_config, epoch_start, &select_chain)?;
-			let (epoch_start, epoch_end) = (epoch.start_slot, epoch.end_slot());
+			let (epoch_start, epoch_end) = (epoch.start_slot(), epoch.end_slot());
 
-			let mut claims: HashMap<AuthorityId, SlotAuthorship> = HashMap::new();
+			let mut claims: HashMap<AuthorityId, EpochAuthorship> = HashMap::new();
 
-			for slot_number in epoch_start..=epoch_end {
+			for slot_number in epoch_start..epoch_end {
 				let epoch = epoch_data(&shared_epoch, &client, &babe_config, slot_number, &select_chain)?;
-				let slot = authorship::claim_slot(slot_number, &epoch, &babe_config, &keystore);
-				if let Some((claim, key)) = slot {
+				if let Some((claim, key)) = authorship::claim_slot(slot_number, &epoch, &babe_config, &keystore) {
 					match claim {
-						BabePreDigest::Primary { .. } => {
+						PreDigest::Primary { .. } => {
 							claims.entry(key.public()).or_default().primary.push(slot_number);
 						}
-						BabePreDigest::Secondary { .. } => {
+						PreDigest::Secondary { .. } => {
 							claims.entry(key.public()).or_default().secondary.push(slot_number);
 						}
 					};
@@ -156,18 +155,16 @@ impl<B, C, SC> Babe for BabeRPC<B, C, SC>
 
 		self.threadpool.spawn_ok(future);
 
-		Box::new(async {
-			rx.await.expect("sender is never dropped; qed")
-		}.boxed().compat())
+		Box::new(async { rx.await.expect("sender is never dropped; qed") }.boxed().compat())
 	}
 }
 
-/// slot authorship information
+/// Holds information about the `slot_number`'s that can be claimed by a given key.
 #[derive(Default, Debug, Deserialize, Serialize)]
-pub struct SlotAuthorship {
-	/// slot number in the epoch
+pub struct EpochAuthorship {
+	/// the array of primary slots that can be claimed
 	primary: Vec<u64>,
-	/// claim data
+	/// the array of secondary slots that can be claimed
 	secondary: Vec<u64>,
 }
 
@@ -194,7 +191,7 @@ impl From<Error> for jsonrpc_core::Error {
 
 /// fetches the epoch data for a given slot_number.
 fn epoch_data<B, C, SC>(
-	epoch_changes: &SharedEpochChanges<B>,
+	epoch_changes: &SharedEpochChanges<B, Epoch>,
 	client: &Arc<C>,
 	babe_config: &Config,
 	slot_number: u64,
