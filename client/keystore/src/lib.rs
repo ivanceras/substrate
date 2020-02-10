@@ -111,7 +111,7 @@ impl Store {
 	/// Insert the given public/private key pair with the given key type.
 	///
 	/// Does not place it into the file system store.
-	fn insert_ephemeral_pair<Pair: PairT>(&mut self, pair: &Pair, seed: &str, key_type: KeyTypeId) {
+	fn winsert_ephemeral_pair<Pair: PairT>(&mut self, pair: &Pair, seed: &str, key_type: KeyTypeId) {
 		let key = (key_type, pair.public().to_raw_vec());
 		self.additional.insert(key, seed.into());
 	}
